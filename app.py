@@ -1,56 +1,102 @@
-
-import streamlit as st
+import requests
 import pandas as pd
-import matplotlib.pyplot as plt
-import os
+import ta
+import time
 
-st.set_page_config(page_title="نظام التداول الذكي", layout="wide")
-st.title("نظام التداول الذكي - Smart Trading AI")
+# دالة تحميل البيانات من CoinGecko
+def get_coin_data(coin_id, vs_currency='usd', days='30'):
+    url = f'https://api.coingecko.com/api/v3/coins/{coin_id}/market_chart'
+    params = {'vs_currency': vs_currency, 'days': days}
+    response = requests.get(url, params=params)
+    data = response.json()
+    df = pd.DataFrame(data['prices'], columns=['timestamp', 'price'])
+    df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms')
+    return df
 
-log_file = "trade_performance.csv"
-if os.path.exists(log_file):
-    trade_log = pd.read_csv(log_file)
-else:
-    trade_log = pd.DataFrame(columns=["Coin", "Type", "Price", "P/L %", "Balance"])
+# دالة حساب المؤشرات الفنية
+def add_technical_indicators(df):
+    df['RSI'] = ta.momentum.RSIIndicator(df['price'], window=14).rsi()
+    df['SMA'] = ta.trend.sma_indicator(df['price'], window=50)
+    df['EMA'] = ta.trend.ema_indicator(df['price'], window=50)
+    return df
 
-tabs = st.tabs(["لوحة الأداء", "تحليل السوق", "تشغيل النموذج", "سجل الصفقات"])
+# إعداد المتغيرات الأساسية
+capital = 1000             # رأس المال بالدولار
+position_size = 0.5        # نسبة الدخول في الصفقة (50%)
+stop_loss_percent = 5      # نسبة الخسارة المسموح بها
+take_profit_percent = 30   # نسبة الربح المطلوبة
+in_trade = False           # حالة الصفقة: غير مفعلة بالبداية
+entry_price = 0            # سعر الدخول المبدئي
+trade_direction = ""       # اتجاه الصفقة: شراء أو بيع
 
-with tabs[0]:
-    st.subheader("لوحة الأداء")
-    if not trade_log.empty:
-        latest_balance = trade_log['Balance'].iloc[-1]
-        total_trades = len(trade_log)
-        win_rate = (trade_log['Type'] == 'Profit').sum() / total_trades * 100
+# سجل الصفقات
+trade_log = []
 
-        col1, col2, col3 = st.columns(3)
-        col1.metric("الرصيد الحالي", f"${latest_balance:,.2f}")
-        col2.metric("عدد الصفقات", total_trades)
-        col3.metric("نسبة النجاح", f"{win_rate:.2f} %")
-    else:
-        st.info("لا توجد بيانات صفقات حالياً. يرجى تشغيل النموذج أولاً.")
+# استراتيجية التداول الذكية
+def trade_strategy_v2(df, coin_name):
+    global capital, in_trade, entry_price, trade_direction
 
-with tabs[1]:
-    st.subheader("تحليل السوق الفني")
-    st.write("يعرض المؤشرات الفنية وإشارات الدخول الذكية (مثال توضيحي).")
-    if os.path.exists("market_data.csv"):
-        df = pd.read_csv("market_data.csv")
-        st.line_chart(df['Close'])
-        st.dataframe(df[df['Smart_Entry'] == 1].tail(10))
-    else:
-        st.warning("لا توجد بيانات للسوق. يرجى تشغيل النموذج أولاً.")
+    current_price = df['price'].iloc[-1]
+    rsi = df['RSI'].iloc[-1]
 
-with tabs[2]:
-    st.subheader("تشغيل النموذج الذكي")
-    if st.button("ابدأ التحليل والتداول"):
-        with st.spinner("جاري تنفيذ النموذج..."):
-            from trading_model import trade_strategy
-            trade_strategy()
-        st.success("تم تنفيذ النموذج بنجاح.")
+    print(f"\n--- تحليل {coin_name.upper()} ---")
+    print(f"السعر الحالي: {current_price:.2f} USD")
+    print(f"RSI الحالي: {rsi:.2f}")
 
-with tabs[3]:
-    st.subheader("سجل الصفقات")
-    if not trade_log.empty:
-        st.dataframe(trade_log.tail(20))
-        st.download_button("تحميل السجل بصيغة CSV", trade_log.to_csv(index=False), "trade_log.csv", "text/csv")
-    else:
-        st.info("لا توجد صفقات مسجلة بعد.")
+    if not in_trade:
+        if rsi < 30:
+            print("إشارة شراء")
+            entry_price = current_price
+            in_trade = True
+            trade_direction = "buy"
+            print(f"تم الشراء بسعر: {entry_price}")
+            trade_log.append({'coin': coin_name, 'type': 'BUY', 'price': entry_price})
+        elif rsi > 70:
+            print("إشارة بيع")
+            entry_price = current_price
+            in_trade = True
+            trade_direction = "sell"
+            print(f"تم البيع بسعر: {entry_price}")
+            trade_log.append({'coin': coin_name, 'type': 'SELL', 'price': entry_price})
+
+    # إذا كانت الصفقة نشطة
+    if in_trade:
+        current_price = df['price'].iloc[-1]
+        print(f"السعر الحالي: {current_price}")
+
+        # حساب الخسارة أو الربح
+        if trade_direction == "buy":
+            price_change = (current_price - entry_price) / entry_price * 100
+        elif trade_direction == "sell":
+            price_change = (entry_price - current_price) / entry_price * 100
+
+        # تحقق من الوصول إلى هدف الربح أو الخسارة
+        if price_change >= take_profit_percent:
+            print(f"تم الوصول إلى هدف الربح بنسبة {price_change}%. تم إغلاق الصفقة.")
+            capital += (capital * (position_size * take_profit_percent / 100))  # زيادة رأس المال بالربح
+            in_trade = False  # إغلاق الصفقة
+        elif price_change <= -stop_loss_percent:
+            print(f"تم الوصول إلى حد الخسارة بنسبة {stop_loss_percent}%. تم إغلاق الصفقة.")
+            capital -= (capital * (position_size * stop_loss_percent / 100))  # تقليل رأس المال بالخسارة
+            in_trade = False  # إغلاق الصفقة
+
+    # انتظار فترة معينة بين الصفقات (مثلاً ساعتين)
+    wait_for_next_trade()
+
+# دالة للانتظار بين الصفقات
+def wait_for_next_trade():
+    print("انتظار 2 ساعة لتقييم السوق...")
+    time.sleep(7200)  # الانتظار لمدة ساعتين (7200 ثانية)
+
+# بدء الاستراتيجية
+def main():
+    # تحميل بيانات عملة ADA وتجهيزها
+    data_ada = get_coin_data('cardano', vs_currency='usd', days='30')
+    data_ada = add_technical_indicators(data_ada)
+
+    # تنفيذ الاستراتيجية
+    trade_strategy_v2(data_ada, 'cardano')
+
+# تنفيذ البرنامج
+if name == "main":
+    main()
