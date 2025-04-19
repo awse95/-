@@ -98,5 +98,5 @@ def main():
     trade_strategy_v2(data_ada, 'cardano')
 
 # تنفيذ البرنامج
-if name == "main":
+if __name__ == "__main__":
     main()
